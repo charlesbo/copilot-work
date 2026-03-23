@@ -338,6 +338,374 @@ cp ~/.copilot/session-state/<session-id>/plan.md .copilot-work/plan.md
 
 ---
 
+## Copilot CLI Session 管理完全指南
+
+> 掌握 session 的生命周期——启动、使用、结束、恢复、备份——是高效使用 Copilot CLI 的基础。
+
+### 基础概念
+
+每次运行 `copilot` 命令都会创建或进入一个 **session**。Session 是你和 Copilot 对话的完整上下文，包含：
+
+- 所有对话历史
+- Copilot 生成的计划文件
+- 工具调用记录
+- 上下文压缩的检查点
+
+Session 数据存储在本地：
+```
+~/.copilot/session-state/{session-id}/
+├── events.jsonl      # 完整对话历史
+├── workspace.yaml    # 元数据
+├── plan.md           # 实施计划（如果创建了的话）
+├── checkpoints/      # 上下文压缩历史
+└── files/            # 持久化的 session 文件
+```
+
+---
+
+### 1. 启动 Session
+
+#### 启动全新 session
+
+```bash
+# 最基本的方式——在项目目录下运行
+cd /path/to/your/project
+copilot
+```
+
+首次启动时，Copilot 会询问你是否信任当前目录的文件。选择：
+1. **Yes, proceed** — 仅本次 session 信任
+2. **Yes, and remember this folder** — 永久信任此目录
+3. **No, exit (Esc)** — 退出
+
+#### 带参数启动
+
+```bash
+# 指定模型
+copilot --model claude-sonnet-4.5
+
+# 直接带一个提示（编程式调用，完成后自动退出）
+copilot -p "修复 README 中的拼写错误" --allow-all-tools
+
+# 恢复上一个 session
+copilot --continue
+
+# 恢复指定 session
+copilot --resume SESSION-ID
+
+# 启用实验性功能（如 autopilot 模式）
+copilot --experimental
+
+# 显示欢迎动画
+copilot --banner
+```
+
+#### 模式切换
+
+进入 session 后，按 **Shift+Tab** 在三种模式间循环：
+- **Interactive（交互模式）** — 默认模式，逐步确认
+- **Plan（计划模式）** — 先制定计划再执行
+- **Autopilot（自动驾驶模式）** — 实验性功能，自主完成任务
+
+---
+
+### 2. 查看 Session 信息
+
+在 session 内部使用以下命令了解当前状态：
+
+```
+/session                    # 查看当前 session 概要信息
+/session checkpoints        # 查看所有上下文压缩检查点列表
+/session checkpoints 1      # 查看第 1 个检查点的详细内容
+/session files              # 查看 session 中创建的临时文件
+/session plan               # 查看当前的实施计划
+/context                    # 可视化展示 token 使用情况
+/usage                      # 显示 session 使用统计（请求次数、时长、代码行数等）
+```
+
+---
+
+### 3. Session 内上下文管理
+
+#### 自动压缩（Auto-compaction）
+
+当对话接近 **95% token 上限** 时，Copilot 会**自动在后台压缩**历史记录，不会中断你的工作流。这意味着 session 可以"无限"持续。
+
+#### 手动压缩
+
+```
+/compact                    # 手动触发上下文压缩（释放 token 空间）
+```
+
+压缩会创建一个 **checkpoint**——包含被压缩内容的摘要。你可以通过 `/session checkpoints` 查看。
+
+#### 清除历史（在同一 session 内重新开始）
+
+```
+/clear                      # 清除对话历史，相当于在同一 session 内重开
+/new                        # 同上，/clear 的别名
+```
+
+> ⚠️ `/clear` 会丢弃当前对话历史。如果有重要内容，先保存到文件。
+
+---
+
+### 4. Session 重命名
+
+给 session 起一个有意义的名字，方便以后查找：
+
+```
+/rename jwt-auth-feature    # 重命名当前 session
+/session rename my-task     # 同上，完整写法
+```
+
+---
+
+### 5. 结束 Session
+
+有多种方式结束当前 session：
+
+| 方式 | 操作 | 说明 |
+|------|------|------|
+| 命令退出 | `/exit` 或 `/quit` | 优雅退出，session 会自动保存 |
+| 快捷键退出 | `Ctrl+C` 连按两次 | 第一次取消当前操作，第二次退出 |
+| 关闭终端 | `Ctrl+D` | 直接关闭 |
+
+**⚡ 结束前的最佳实践：**
+
+```
+# 1. 让 Copilot 总结当前进度
+请把本次 session 的工作总结更新到 .copilot-work/progress.md
+
+# 2. 写交接文档（如果任务未完成）
+请更新 .copilot-work/handoff.md 做交接
+
+# 3. 提交代码
+帮我做一个 git commit，描述本次改动
+
+# 4. 然后退出
+/exit
+```
+
+---
+
+### 6. 恢复 Session（核心技能）
+
+#### 方法一：快速恢复上一个 session
+
+```bash
+copilot --continue
+```
+
+这会直接恢复你**最近关闭的本地 session**，包括所有对话历史和上下文。
+
+#### 方法二：从 session 列表中选择
+
+```bash
+copilot --resume
+```
+
+或者在已有 session 内部：
+
+```
+/resume
+```
+
+会显示一个 session 列表，用方向键选择后回车恢复。
+
+#### 方法三：恢复指定 session
+
+```bash
+copilot --resume SESSION-ID
+```
+
+或在 session 内部：
+
+```
+/resume SESSION-ID
+```
+
+> 💡 **如何找到 Session ID？** 
+> - 在 session 内使用 `/session` 查看当前 ID
+> - 查看 `~/.copilot/session-state/` 目录下的文件夹名
+
+#### 方法四：从 GitHub 云端恢复（delegate 的任务）
+
+如果你使用了 `/delegate` 将任务发送到 GitHub 云端执行，可以用 `/resume` 查看并恢复这些远程任务。
+
+---
+
+### 7. 备份 Session 内容
+
+#### 方法一：导出为 Markdown 文件
+
+```
+/share file ./session-backup.md           # 导出到指定文件
+/share file                                # 导出到默认位置
+```
+
+这会把整个对话历史导出为一个可读的 Markdown 文件。
+
+#### 方法二：导出为 GitHub Gist
+
+```
+/share gist                                # 上传为 GitHub Gist（私密）
+```
+
+适合在不同设备间共享 session 内容。
+
+#### 方法三：手动备份 session 目录
+
+```bash
+# 查看所有 session
+ls -lt ~/.copilot/session-state/
+
+# 备份特定 session
+cp -r ~/.copilot/session-state/{session-id} ~/backups/copilot-sessions/
+
+# 备份所有 session
+cp -r ~/.copilot/session-state/ ~/backups/copilot-sessions-all/
+```
+
+#### 方法四：让 Copilot 帮你保存关键内容到项目目录
+
+这是**最推荐的方式**——把重要内容持久化到你的项目中：
+
+```
+# 保存工作总结
+把本次 session 的所有关键成果和决策总结到 .copilot-work/progress.md
+
+# 保存特定输出
+把刚才的测试结果保存到 .copilot-work/snapshots/test-results-20240115.txt
+
+# 保存交接文档
+把完整的工作上下文写到 .copilot-work/handoff.md
+```
+
+> 🔑 **核心原则：session 会消失，项目目录不会。** 任何重要内容都应该落地到项目文件中。
+
+---
+
+### 8. Session 管理速查表
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Session 生命周期速查                           │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  启动        copilot                  # 新 session               │
+│              copilot --continue       # 恢复上一个               │
+│              copilot --resume         # 选择恢复                 │
+│                                                                  │
+│  查看        /session                 # 当前 session 信息        │
+│              /context                 # token 使用情况           │
+│              /usage                   # 使用统计                 │
+│                                                                  │
+│  管理        /rename NAME             # 重命名                   │
+│              /compact                 # 压缩上下文               │
+│              /clear                   # 清除历史                 │
+│              /model                   # 切换模型                 │
+│                                                                  │
+│  备份        /share file PATH         # 导出为文件               │
+│              /share gist              # 导出为 Gist              │
+│                                                                  │
+│  切换        /resume                  # 切换到其他 session       │
+│              Shift+Tab                # 切换模式                 │
+│                                                                  │
+│  结束        /exit                    # 退出                     │
+│              Ctrl+C × 2              # 快速退出                 │
+│              Ctrl+D                   # 关闭                     │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 9. 实战场景示例
+
+#### 场景 A：开始一个新的大任务
+
+```bash
+# 1. 进入项目目录，启动 Copilot
+cd ~/projects/my-app
+copilot
+
+# 2. 在 Copilot 中
+/rename auth-feature                    # 给 session 命名
+# 然后切换到 Plan 模式（Shift+Tab），输入需求
+```
+
+#### 场景 B：昨天的任务今天继续
+
+```bash
+# 快速恢复
+copilot --continue
+
+# 或者从列表中找
+copilot --resume
+# 在列表中找到 "auth-feature" session
+```
+
+#### 场景 C：任务完成，需要归档
+
+```
+# 在 session 内
+/share file .copilot-work/sessions/auth-feature-session.md
+请把最终成果总结到 .copilot-work/progress.md
+/exit
+```
+
+#### 场景 D：session 意外断开
+
+```bash
+# 不用慌，session 自动保存
+copilot --continue
+# 对话历史完整恢复，继续工作
+```
+
+#### 场景 E：session 上下文太长，Copilot 开始"遗忘"
+
+```
+# 手动压缩上下文
+/compact
+
+# 如果效果不好，保存关键内容后清空重来
+请把当前工作状态完整写到 .copilot-work/handoff.md
+/clear
+# 然后重新加载上下文
+请阅读 .copilot-work/handoff.md 恢复上下文
+```
+
+---
+
+### 10. 常见问题补充
+
+#### Q：Session 数据会自动清理吗？
+
+目前不会自动清理。所有 session 数据保存在 `~/.copilot/session-state/` 下。如果磁盘空间紧张，可以手动删除不需要的旧 session 目录。
+
+#### Q：`/compact` 和 `/clear` 的区别？
+
+- **`/compact`**：压缩历史但保留摘要，Copilot 仍然"记得"之前的内容要点。会创建 checkpoint。
+- **`/clear`**：彻底清除所有对话历史，Copilot 完全从零开始。不可恢复。
+
+#### Q：能同时运行多个 session 吗？
+
+可以。在不同的终端窗口分别运行 `copilot`，每个窗口都是独立的 session。适合同时处理不相关的任务。
+
+#### Q：`--continue` 和 `--resume` 的区别？
+
+- **`--continue`**：直接恢复**最近一个**关闭的 session，无需选择。
+- **`--resume`**：显示 session 列表让你**选择**要恢复的 session。也可以 `--resume SESSION-ID` 直接指定。
+
+#### Q：如何防止重要 session 被误删？
+
+1. 养成用 `/rename` 命名 session 的习惯
+2. 重要 session 用 `/share file` 导出备份
+3. 关键工作内容始终保存到项目目录（`.copilot-work/`）
+
+---
+
 ## 一句话总结
 
 > **把"脑子里的上下文"变成"文件里的上下文"——这就是跨 session 工作的全部秘诀。**
