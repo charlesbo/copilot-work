@@ -338,6 +338,218 @@ cp ~/.copilot/session-state/<session-id>/plan.md .copilot-work/plan.md
 
 ---
 
+## 新项目初始化指南：让 Copilot 自动了解你的项目
+
+> 在项目创建之初就配置好指令文件，Copilot 每次启动都会**自动读取**，无需你反复解释。
+
+### Copilot 自动发现的文件
+
+Copilot CLI 启动时会自动扫描以下位置的文件，**无需手动指定**，所有发现的文件内容会**合并**后注入到上下文中：
+
+| 文件 | 位置 | 作用 | 优先级 |
+|------|------|------|--------|
+| `.github/copilot-instructions.md` | 项目根目录 | **最核心** — 项目级全局指令 | 仓库级 |
+| `.github/instructions/**/*.instructions.md` | 项目根目录 | 按路径/模块拆分的细粒度指令 | 仓库级（模块化） |
+| `AGENTS.md` | git root 或 cwd | Agent 行为偏好和工作指令 | 仓库级 |
+| `CLAUDE.md` / `GEMINI.md` / `CODEX.md` | git root 或 cwd | 模型特定指令（也会被读取） | 仓库级 |
+| `~/.copilot/copilot-instructions.md` | 用户 home 目录 | 全局个人偏好（对所有项目生效） | 用户级 |
+
+> 💡 **仓库级指令优先于用户级指令。** 这意味着团队约定可以覆盖个人偏好。
+
+### 方法一：使用 `/init` 快速初始化（推荐）
+
+```bash
+cd /path/to/new-project
+copilot
+# 进入后输入：
+/init
+```
+
+`/init` 命令会交互式地引导你创建指令文件，自动生成合理的初始模板。
+
+### 方法二：手动初始化（完全控制）
+
+#### 推荐的项目结构
+
+```
+my-project/
+├── .github/
+│   ├── copilot-instructions.md              # 🔑 项目全局指令（必创建）
+│   └── instructions/                         # 可选：模块化指令
+│       ├── frontend.instructions.md          # 前端特定规则
+│       ├── api.instructions.md               # API 特定规则
+│       └── testing.instructions.md           # 测试规范
+├── AGENTS.md                                 # 可选：Agent 行为偏好
+├── .copilot-work/                            # 长任务管理（本项目的方法论）
+│   ├── plan.md
+│   ├── progress.md
+│   └── handoff.md
+└── ...
+```
+
+#### 核心文件：`.github/copilot-instructions.md`
+
+这是**最重要的文件**——每次 Copilot 启动都会读取它。应包含以下内容：
+
+```markdown
+# 项目概述
+
+本项目是 [一句话描述]。主要功能包括 [核心功能列表]。
+技术栈：[语言/框架/数据库等]。
+
+## 构建与运行命令
+
+- `npm install` — 安装依赖
+- `npm run dev` — 启动开发服务器
+- `npm run build` — 构建生产版本
+- `npm run test` — 运行所有测试
+- `npm run lint:fix` — 修复 lint 问题
+
+## 代码风格约定
+
+- 使用 TypeScript strict 模式
+- 优先使用函数式组件
+- 公开 API 必须添加 JSDoc 注释
+- commit message 遵循 Conventional Commits 格式
+
+## 项目结构
+
+- `src/` — 源代码
+- `src/components/` — React 组件
+- `src/api/` — API 路由
+- `src/lib/` — 共享工具函数
+- `tests/` — 测试文件
+
+## 关键架构决策
+
+- 认证使用 JWT + refresh token
+- 数据库使用 PostgreSQL，ORM 使用 Prisma
+- API 遵循 RESTful 设计
+
+## 工作流
+
+- 修改代码后运行 `npm run lint:fix && npm test`
+- 从 `main` 分支创建 feature 分支
+```
+
+> ⚡ **保持简洁、可操作。** 过长的指令会稀释效果。重点写"Copilot 需要知道什么才能正确工作"。
+
+#### 模块化指令：`.github/instructions/*.instructions.md`
+
+当项目较大时，按模块拆分更清晰。每个文件可以指定只对特定路径生效：
+
+**`.github/instructions/frontend.instructions.md`：**
+```markdown
+---
+applyTo: "src/components/**"
+---
+
+# 前端组件规范
+
+- 使用 React 函数式组件 + Hooks
+- 样式使用 Tailwind CSS
+- 组件文件使用 PascalCase 命名
+- 每个组件必须有对应的 .test.tsx 文件
+```
+
+**`.github/instructions/api.instructions.md`：**
+```markdown
+---
+applyTo: "src/api/**"
+---
+
+# API 开发规范
+
+- 所有端点需要输入验证（使用 zod）
+- 错误响应统一使用 { error: string, code: number } 格式
+- 需要认证的端点使用 authMiddleware
+```
+
+#### Agent 行为文件：`AGENTS.md`
+
+定义 Copilot 作为 Agent 时的行为偏好：
+
+```markdown
+# Agent 指令
+
+## 通用规则
+- 修改代码后必须运行测试
+- 每个子任务完成后做 git commit
+- 重要决策记录到 .copilot-work/progress.md
+- 不确定时先问我，不要猜
+
+## 长任务管理
+- 计划文件：.copilot-work/plan.md
+- 进度日志：.copilot-work/progress.md
+- 交接文档：.copilot-work/handoff.md
+- session 结束前主动更新交接文档
+```
+
+#### 全局个人偏好：`~/.copilot/copilot-instructions.md`
+
+这个文件影响你**所有项目**，适合放个人编码习惯：
+
+```markdown
+# 个人偏好
+
+- 使用中文回复
+- 代码注释使用英文
+- 优先使用已有的库，避免引入新依赖
+- git commit message 使用 Conventional Commits 格式
+- 解释技术决策时给出理由
+```
+
+### 新项目初始化检查清单
+
+开始一个新项目时，按以下顺序操作：
+
+```
+1. ☐ 创建项目目录，git init
+2. ☐ 创建 .github/copilot-instructions.md（项目概述 + 命令 + 规范）
+3. ☐ 创建 AGENTS.md（Agent 行为偏好）
+4. ☐ 如需模块化规则，创建 .github/instructions/*.instructions.md
+5. ☐ 创建 .copilot-work/ 目录（长任务管理）
+6. ☐ 确认 ~/.copilot/copilot-instructions.md 有你的全局偏好
+7. ☐ git commit 初始文件
+8. ☐ 启动 copilot，输入 /instructions 确认所有文件被正确加载
+```
+
+> 💡 **验证技巧：** 在 Copilot session 中输入 `/instructions` 可以查看当前加载了哪些指令文件，以及每个文件的启用/禁用状态。
+
+### 一分钟快速初始化脚本
+
+如果你想最快速度搭好骨架：
+
+```bash
+mkdir -p .github/instructions .copilot-work/snapshots
+
+cat > .github/copilot-instructions.md << 'EOF'
+# 项目概述
+本项目是 [TODO: 填写项目描述]。
+
+## 命令
+- [TODO: 填写构建/测试/运行命令]
+
+## 代码风格
+- [TODO: 填写代码规范]
+
+## 项目结构
+- [TODO: 填写目录结构说明]
+EOF
+
+cat > AGENTS.md << 'EOF'
+# Agent 指令
+- 修改代码后运行测试
+- 每完成一个子任务做 git commit
+- 重要决策记录到 .copilot-work/progress.md
+- 不确定时先问，不要猜
+EOF
+
+echo "初始化完成！请编辑 .github/copilot-instructions.md 填写项目信息。"
+```
+
+---
+
 ## Copilot CLI Session 管理完全指南
 
 > 掌握 session 的生命周期——启动、使用、结束、恢复、备份——是高效使用 Copilot CLI 的基础。
