@@ -338,6 +338,284 @@ cp ~/.copilot/session-state/<session-id>/plan.md .copilot-work/plan.md
 
 ---
 
+## 应对 Auto-Compaction：防止上下文丢失的终极方案
+
+> Copilot 在 context 接近 95% 时会自动压缩（auto-compact），这个过程常常丢失关键任务信息。以下是系统性的解决方案。
+
+### 问题本质
+
+Auto-compaction 时，Copilot 会把长对话历史压缩成摘要。这个过程中容易丢失：
+- 当前正在做什么、做到哪一步了
+- 子任务的完成状态和依赖关系
+- 关键决策的细节和理由
+- 未完成事项的具体上下文
+
+**核心矛盾**：目前 Copilot CLI 的 hooks 系统**没有** `preCompaction` / `postCompaction` 类型。也就是说，你**无法**通过 hooks 在 compaction 前后自动执行脚本。
+
+可用的 hook 类型只有：`sessionStart`、`sessionEnd`、`userPromptSubmitted`、`preToolUse`、`postToolUse`、`agentStop`、`subagentStop`、`errorOccurred`。
+
+但我们可以组合多种机制来**最大程度减少**信息丢失。
+
+---
+
+### 方案一：用 Custom Instructions 让 Copilot "自律"（最核心）
+
+这是**最有效的方案**——在 AGENTS.md 或 `.github/copilot-instructions.md` 中写入硬性规则，让 Copilot 在每次响应结束时、每完成一个子任务时，**主动**把状态写入文件。这样即使 compaction 发生，文件里的信息不会丢。
+
+**在 `AGENTS.md` 中加入以下规则：**
+
+```markdown
+## Compaction 防丢失规则（必须严格遵守）
+
+### 持续状态同步
+你必须在以下时机自动更新 `.copilot-work/handoff.md`，无需我提醒：
+
+1. **每完成一个子任务时** — 立即更新
+2. **每做出一个重要决策时** — 立即记录
+3. **每次对话超过 10 轮时** — 主动更新一次
+4. **每次你感觉对话很长时** — 主动更新一次
+
+### handoff.md 必须包含的内容
+更新 handoff.md 时，必须包含以下所有内容：
+
+1. **当前任务状态**：正在做什么，做到哪一步
+2. **已完成的子任务列表**：哪些已经做完了
+3. **下一步具体动作**：接下来要做什么（要具体到文件和操作）
+4. **关键决策记录**：选了什么方案，为什么
+5. **未解决的问题**：遇到了什么问题，当前思路是什么
+6. **关键文件列表**：这次改动涉及哪些文件
+
+### Compaction 后的恢复动作
+如果你发现自己的上下文被压缩了（例如你不记得之前的对话细节了），
+必须**立即**执行以下动作，不要等我指示：
+
+1. 读取 `.copilot-work/handoff.md` 恢复任务上下文
+2. 读取 `.copilot-work/plan.md` 确认总体计划
+3. 读取 `.copilot-work/progress.md` 确认进度
+4. 向我简要报告当前状态和下一步计划
+5. 等我确认后再继续工作
+```
+
+> 🔑 **原理**：Custom instructions 在每次 compaction 后仍然会被重新注入到上下文中，所以这些规则会持续生效。
+
+---
+
+### 方案二：用 Hooks 实现自动化辅助
+
+虽然没有 compaction 专用 hook，但可以利用现有 hook 来**间接**降低丢失风险。
+
+#### 步骤 1：创建 hooks 配置文件
+
+```bash
+mkdir -p .github/hooks
+```
+
+**`.github/hooks/state-tracking.json`：**
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/on-session-start.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/on-agent-stop.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/on-session-end.sh",
+        "cwd": ".",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}
+```
+
+#### 步骤 2：创建 hook 脚本
+
+**`.github/hooks/scripts/on-session-start.sh`** — session 启动/恢复时提醒：
+
+```bash
+#!/bin/bash
+INPUT=$(cat)
+SOURCE=$(echo "$INPUT" | jq -r '.source')
+
+# 如果是恢复的 session，提醒读取状态文件
+if [ "$SOURCE" = "resume" ]; then
+  echo "[HOOK] Resumed session — handoff.md should be read for context recovery"
+fi
+
+# 记录 session 启动
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Session $SOURCE" >> .copilot-work/session-log.txt
+```
+
+**`.github/hooks/scripts/on-agent-stop.sh`** — 每次 Copilot 响应结束时记录：
+
+```bash
+#!/bin/bash
+# 每次 agent 完成响应后，追加时间戳到日志
+# 这有助于追踪对话节奏，判断是否接近 compaction
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Agent response completed" >> .copilot-work/session-log.txt
+```
+
+**`.github/hooks/scripts/on-session-end.sh`** — session 结束时做最后备份：
+
+```bash
+#!/bin/bash
+INPUT=$(cat)
+REASON=$(echo "$INPUT" | jq -r '.reason')
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Session ended: $REASON" >> .copilot-work/session-log.txt
+
+# 自动做一个 git stash 快照（如果有未提交的改动）
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  git stash push -m "auto-save-session-end-$(date '+%Y%m%d-%H%M%S')" 2>/dev/null
+fi
+```
+
+```bash
+# 别忘了给脚本加执行权限
+chmod +x .github/hooks/scripts/*.sh
+```
+
+---
+
+### 方案三：主动 Compact 代替被动等待（推荐习惯）
+
+与其等 auto-compaction 突然发生，**不如主动控制**节奏：
+
+```
+# 当你感觉对话已经很长时，主动说：
+请更新 .copilot-work/handoff.md，然后我要手动 compact。
+
+# Copilot 更新完文件后：
+/compact
+
+# compact 完成后：
+请读取 .copilot-work/handoff.md 恢复上下文，然后继续工作。
+```
+
+**这个流程的优势**：
+1. 你控制 compaction 时机，不会被突然打断
+2. 确保状态文件在 compaction **前**已更新
+3. compaction 后立即恢复，无缝衔接
+
+---
+
+### 方案四：三管齐下的完整防御体系
+
+将以上方案组合使用，形成多层防御：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                防 Compaction 丢失的三层防御                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  第 1 层：Custom Instructions（AGENTS.md）                    │
+│  → Copilot 自律：每完成子任务/每 10 轮自动更新 handoff.md     │
+│  → Compaction 后自动读取 handoff.md 恢复                     │
+│  ⭐ 效果：最核心，覆盖 90% 场景                               │
+│                                                              │
+│  第 2 层：Hooks 自动化                                        │
+│  → sessionStart: 提醒恢复上下文                               │
+│  → agentStop: 记录对话节奏                                    │
+│  → sessionEnd: 自动 git stash 保存                           │
+│  ⭐ 效果：辅助记录，提供安全网                                 │
+│                                                              │
+│  第 3 层：人工主动 Compact                                    │
+│  → 感觉对话很长时主动 compact                                 │
+│  → compact 前确保状态文件已更新                                │
+│  → compact 后立即恢复上下文                                   │
+│  ⭐ 效果：完全可控，零信息丢失                                 │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 完整初始化命令
+
+一键设置所有防 compaction 机制：
+
+```bash
+# 1. 创建 hooks 目录和脚本
+mkdir -p .github/hooks/scripts
+
+# 2. 创建 hooks 配置
+cat > .github/hooks/state-tracking.json << 'HOOKEOF'
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/on-session-start.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/on-agent-stop.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/on-session-end.sh",
+        "cwd": ".",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}
+HOOKEOF
+
+# 3. 创建 hook 脚本
+cat > .github/hooks/scripts/on-session-start.sh << 'EOF'
+#!/bin/bash
+INPUT=$(cat)
+SOURCE=$(echo "$INPUT" | jq -r '.source')
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Session $SOURCE" >> .copilot-work/session-log.txt
+EOF
+
+cat > .github/hooks/scripts/on-agent-stop.sh << 'EOF'
+#!/bin/bash
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Agent response completed" >> .copilot-work/session-log.txt
+EOF
+
+cat > .github/hooks/scripts/on-session-end.sh << 'EOF'
+#!/bin/bash
+INPUT=$(cat)
+REASON=$(echo "$INPUT" | jq -r '.reason')
+echo "$(date '+%Y-%m-%d %H:%M:%S') | Session ended: $REASON" >> .copilot-work/session-log.txt
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+  git stash push -m "auto-save-session-end-$(date '+%Y%m%d-%H%M%S')" 2>/dev/null
+fi
+EOF
+
+chmod +x .github/hooks/scripts/*.sh
+
+echo "✅ 防 Compaction 机制初始化完成！"
+echo "⚠️ 别忘了在 AGENTS.md 中加入 Compaction 防丢失规则。"
+```
+
+---
+
 ## 新项目初始化指南：让 Copilot 自动了解你的项目
 
 > 在项目创建之初就配置好指令文件，Copilot 每次启动都会**自动读取**，无需你反复解释。
